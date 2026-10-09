@@ -22,4 +22,4 @@ modules:
     sources:
       - type: archive
         url: https://github.com/uri-travoski/S-Shot-Wayland/archive/refs/tags/v1.32.tar.gz
-        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        sha256: 10c87b8753738573ca3cb8998222b16c228fe99d5dd664099f47e6d4bfee26db
