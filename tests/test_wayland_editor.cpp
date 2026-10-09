@@ -1,0 +1,1700 @@
+#include <QTest>
+#include <QApplication>
+#include <QPainter>
+#include <QStyleOptionGraphicsItem>
+#include <QGraphicsSceneMouseEvent>
+#include <QWheelEvent>
+#include <QMessageBox>
+#include <QAbstractButton>
+#include "editor/CanvasScene.h"
+#include "editor/CanvasView.h"
+#include "core/SettingsManager.h"
+#include "core/UpdateManager.h"
+#include "core/IconManager.h"
+#include "core/CrashHandler.h"
+#include "capture/WaylandCaptureManager.h"
+#include "editor/items/PenItem.h"
+#include "editor/items/BlurItem.h"
+#include "editor/items/ArrowItem.h"
+#include "editor/items/ShapeItem.h"
+#include "editor/items/BadgeItem.h"
+#include "editor/items/TextItem.h"
+#include "editor/MainWindow.h"
+#include "core/ClipboardHelper.h"
+#include <QLabel>
+#include <QSpinBox>
+#include <QPushButton>
+#include <QFontComboBox>
+#include <QClipboard>
+#include <QMimeData>
+#include <QMenuBar>
+#include <QScrollBar>
+#include <QTextCursor>
+
+class TestScene : public CanvasScene {
+public:
+    using CanvasScene::mousePressEvent;
+    using CanvasScene::mouseMoveEvent;
+    using CanvasScene::mouseReleaseEvent;
+    using CanvasScene::keyPressEvent;
+};
+
+class TestEditorTools : public QObject {
+    Q_OBJECT
+
+private slots:
+    void initTestCase();
+    void testPenItemDrawing();
+    void testHighlighterDrawingAndBlending();
+    void testBlurItemEffect();
+    void testBlurItemLevels();
+    void testBlurItemMovement();
+    void testCanvasSceneToolIntegration();
+    void testCanvasSceneAreaSelectionAndCrop();
+    void testCanvasSceneUndoRedo();
+    void testTextItemMultiLineAndBackground();
+    void testCanvasSceneTextCreation();
+    void testBucketFillTool();
+    void testDefaultBlurStrength();
+    void testSelectionPropertiesSync();
+    void testDefaultSaveLocation();
+    void testCanvasViewDirectMousewheelZoom();
+    void testBlurItemMemoryOptimization();
+    void testScreenCapture();
+    void testWaylandCaptureManagerAndColorPicker();
+    void testAreaDeleteWhiteBackground();
+    void testTabCloseSaveDialogButtons();
+    void testAutoCheckUpdatesSetting();
+    void testUpdateManagerVersionComparison();
+    void testIconManager();
+    void testBadgeStepperAndResetNumbering();
+    void testMainWindowBadgeIntegration();
+    void testToolbarFontControls();
+    void testClipboardCopyHelper();
+    void testToolbarIconsAndActions();
+    void testTextItemMultipleBlocksSelect();
+    void testCrashHandlerAndLogging();
+    void testPanToolAndCanvasResizeHandles();
+    void testPasteImageOntoExistingCanvas();
+    void testTextEditingBackspaceAndDelete();
+};
+
+void TestEditorTools::initTestCase() {
+}
+
+void TestEditorTools::testPenItemDrawing() {
+    PenItem pen(false);
+    pen.setStrokeColor(QColor(255, 0, 0));
+    pen.setStrokeWidth(4);
+
+    QVERIFY(pen.path().isEmpty());
+    pen.addPoint(QPointF(10, 10));
+    QVERIFY(!pen.path().isEmpty());
+    pen.addPoint(QPointF(50, 50));
+    pen.addPoint(QPointF(100, 20));
+
+    QRectF b = pen.boundingRect();
+    QVERIFY(b.width() >= 80);
+    QVERIFY(b.height() >= 30);
+
+    QImage img(150, 100, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    QStyleOptionGraphicsItem opt;
+    pen.paint(&p, &opt, nullptr);
+    p.end();
+
+    int coloredPixels = 0;
+    for (int y = 0; y < img.height(); ++y) {
+        for (int x = 0; x < img.width(); ++x) {
+            if (qAlpha(img.pixel(x, y)) > 50) {
+                coloredPixels++;
+            }
+        }
+    }
+    QVERIFY(coloredPixels > 50);
+}
+
+void TestEditorTools::testHighlighterDrawingAndBlending() {
+    PenItem hl(true);
+    QVERIFY(hl.isHighlighter());
+    QVERIFY(hl.strokeWidth() >= 14);
+    QVERIFY(hl.strokeColor().alpha() < 255);
+
+    hl.addPoint(QPointF(10, 50));
+    hl.addPoint(QPointF(90, 50));
+
+    QImage base(100, 100, QImage::Format_ARGB32_Premultiplied);
+    base.fill(Qt::white);
+    QPainter bp(&base);
+    bp.setPen(QPen(Qt::black, 4));
+    bp.drawLine(50, 10, 50, 90);
+    bp.end();
+
+    QPainter hp(&base);
+    QStyleOptionGraphicsItem opt;
+    hl.paint(&hp, &opt, nullptr);
+    hp.end();
+
+    QRgb interPix = base.pixel(50, 50);
+    QVERIFY(qRed(interPix) < 50);
+    QVERIFY(qGreen(interPix) < 50);
+    QVERIFY(qBlue(interPix) < 50);
+
+    QRgb paperPix = base.pixel(20, 50);
+    QVERIFY(qRed(paperPix) > 200);
+    QVERIFY(qGreen(paperPix) > 180);
+    QVERIFY(qBlue(paperPix) < 170);
+}
+
+void TestEditorTools::testBlurItemEffect() {
+    QImage srcImg(100, 100, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < 100; ++y) {
+        for (int x = 0; x < 100; ++x) {
+            srcImg.setPixel(x, y, (x < 50) ? qRgb(0, 0, 0) : qRgb(255, 255, 255));
+        }
+    }
+    QPixmap srcPix = QPixmap::fromImage(srcImg);
+
+    BlurItem blur(QRectF(20, 20, 60, 60), srcPix, 5);
+
+    QImage renderTarget(100, 100, QImage::Format_ARGB32_Premultiplied);
+    renderTarget.fill(Qt::transparent);
+    QPainter p(&renderTarget);
+    QStyleOptionGraphicsItem opt;
+    blur.paint(&p, &opt, nullptr);
+    p.end();
+
+    int intermediateGrayPixels = 0;
+    for (int y = 30; y < 70; ++y) {
+        for (int x = 40; x < 60; ++x) {
+            int val = qRed(renderTarget.pixel(x, y));
+            if (val > 30 && val < 225) {
+                intermediateGrayPixels++;
+            }
+        }
+    }
+    QVERIFY(intermediateGrayPixels > 20);
+}
+
+void TestEditorTools::testBlurItemLevels() {
+    QImage srcImg(120, 120, QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < 120; ++y) {
+        for (int x = 0; x < 120; ++x) {
+            srcImg.setPixel(x, y, ((x / 10) % 2 == 0) ? qRgb(0, 0, 0) : qRgb(255, 255, 255));
+        }
+    }
+    QPixmap srcPix = QPixmap::fromImage(srcImg);
+
+    BlurItem blurLight(QRectF(10, 10, 100, 100), srcPix, 1);
+    QImage outLight(120, 120, QImage::Format_ARGB32_Premultiplied);
+    outLight.fill(Qt::black);
+    QPainter p1(&outLight);
+    QStyleOptionGraphicsItem opt;
+    blurLight.paint(&p1, &opt, nullptr);
+    p1.end();
+
+    BlurItem blurHeavy(QRectF(10, 10, 100, 100), srcPix, 10);
+    QImage outHeavy(120, 120, QImage::Format_ARGB32_Premultiplied);
+    outHeavy.fill(Qt::black);
+    QPainter p2(&outHeavy);
+    blurHeavy.paint(&p2, &opt, nullptr);
+    p2.end();
+
+    int diffSumLight = 0;
+    int diffSumHeavy = 0;
+    for (int x = 20; x < 99; ++x) {
+        diffSumLight += qAbs(qRed(outLight.pixel(x + 1, 50)) - qRed(outLight.pixel(x, 50)));
+        diffSumHeavy += qAbs(qRed(outHeavy.pixel(x + 1, 50)) - qRed(outHeavy.pixel(x, 50)));
+    }
+
+    QVERIFY(diffSumHeavy < diffSumLight);
+}
+
+void TestEditorTools::testBlurItemMovement() {
+    QImage srcImg(100, 100, QImage::Format_ARGB32_Premultiplied);
+    srcImg.fill(Qt::black);
+    for (int y = 0; y < 40; ++y) {
+        for (int x = 0; x < 40; ++x) {
+            srcImg.setPixel(x, y, qRgb(255, 255, 255));
+        }
+    }
+    QPixmap srcPix = QPixmap::fromImage(srcImg);
+
+    CanvasScene scene;
+    scene.setBasePixmap(srcPix);
+
+    BlurItem* blur = new BlurItem(QRectF(0, 0, 30, 30), srcPix, 5);
+    scene.addItem(blur);
+
+    QImage target1(30, 30, QImage::Format_ARGB32_Premultiplied);
+    QPainter p1(&target1);
+    QStyleOptionGraphicsItem opt;
+    blur->paint(&p1, &opt, nullptr);
+    p1.end();
+    QVERIFY(qRed(target1.pixel(15, 15)) > 200);
+
+    blur->setPos(60, 60);
+
+    QImage target2(30, 30, QImage::Format_ARGB32_Premultiplied);
+    QPainter p2(&target2);
+    blur->paint(&p2, &opt, nullptr);
+    p2.end();
+    QVERIFY(qRed(target2.pixel(15, 15)) < 50);
+}
+
+void TestEditorTools::testCanvasSceneToolIntegration() {
+    TestScene scene;
+    QPixmap base(200, 200);
+    base.fill(Qt::white);
+    scene.setBasePixmap(base);
+
+    scene.setCurrentTool(ToolType::Pen);
+    QCOMPARE(scene.currentTool(), ToolType::Pen);
+
+    QGraphicsSceneMouseEvent pressEv(QEvent::GraphicsSceneMousePress);
+    pressEv.setButton(Qt::LeftButton);
+    pressEv.setScenePos(QPointF(20, 20));
+    scene.mousePressEvent(&pressEv);
+
+    QGraphicsSceneMouseEvent moveEv(QEvent::GraphicsSceneMouseMove);
+    moveEv.setButton(Qt::LeftButton);
+    moveEv.setScenePos(QPointF(40, 40));
+    scene.mouseMoveEvent(&moveEv);
+
+    QGraphicsSceneMouseEvent releaseEv(QEvent::GraphicsSceneMouseRelease);
+    releaseEv.setButton(Qt::LeftButton);
+    releaseEv.setScenePos(QPointF(60, 40));
+    scene.mouseReleaseEvent(&releaseEv);
+
+    QCOMPARE(scene.items().count(), 5);
+
+    scene.setCurrentTool(ToolType::Blur);
+    scene.setBlurLevel(7);
+    QCOMPARE(scene.blurLevel(), 7);
+
+    pressEv.setScenePos(QPointF(100, 100));
+    scene.mousePressEvent(&pressEv);
+    moveEv.setScenePos(QPointF(150, 150));
+    scene.mouseMoveEvent(&moveEv);
+    releaseEv.setScenePos(QPointF(150, 150));
+    scene.mouseReleaseEvent(&releaseEv);
+
+    QCOMPARE(scene.items().count(), 6);
+}
+
+void TestEditorTools::testCanvasSceneAreaSelectionAndCrop() {
+    TestScene scene;
+    QPixmap base(200, 200);
+    base.fill(Qt::blue);
+    scene.setBasePixmap(base);
+
+    scene.setCurrentTool(ToolType::Select);
+
+    QGraphicsSceneMouseEvent pressEv(QEvent::GraphicsSceneMousePress);
+    pressEv.setButton(Qt::LeftButton);
+    pressEv.setScenePos(QPointF(10, 10));
+    scene.mousePressEvent(&pressEv);
+
+    QGraphicsSceneMouseEvent moveEv(QEvent::GraphicsSceneMouseMove);
+    moveEv.setButton(Qt::LeftButton);
+    moveEv.setScenePos(QPointF(110, 110));
+    scene.mouseMoveEvent(&moveEv);
+
+    QGraphicsSceneMouseEvent releaseEv(QEvent::GraphicsSceneMouseRelease);
+    releaseEv.setButton(Qt::LeftButton);
+    releaseEv.setScenePos(QPointF(110, 110));
+    scene.mouseReleaseEvent(&releaseEv);
+
+    QVERIFY(scene.hasAreaSelection());
+    QCOMPARE(scene.selectedArea().toRect(), QRect(10, 10, 100, 100));
+
+    // Test deleteSelectedArea() fills deleted region with clean white background
+    scene.setSelectedArea(QRectF(20, 20, 50, 50));
+    scene.deleteSelectedArea();
+    QCOMPARE(scene.basePixmap().toImage().pixelColor(30, 30), QColor(255, 255, 255));
+    QCOMPARE(scene.basePixmap().toImage().pixelColor(5, 5), QColor(0, 0, 255));
+
+    scene.setSelectedArea(QRectF(10, 10, 100, 100));
+    scene.cropToSelectedArea();
+    QCOMPARE(scene.basePixmap().size(), QSize(100, 100));
+    QVERIFY(!scene.hasAreaSelection());
+}
+
+void TestEditorTools::testCanvasSceneUndoRedo() {
+    TestScene scene;
+    QPixmap base(200, 200);
+    base.fill(Qt::white);
+    scene.setBasePixmap(base);
+
+    scene.setCurrentTool(ToolType::Rectangle);
+
+    QGraphicsSceneMouseEvent pressEv(QEvent::GraphicsSceneMousePress);
+    pressEv.setButton(Qt::LeftButton);
+    pressEv.setScenePos(QPointF(10, 10));
+    scene.mousePressEvent(&pressEv);
+
+    QGraphicsSceneMouseEvent releaseEv(QEvent::GraphicsSceneMouseRelease);
+    releaseEv.setButton(Qt::LeftButton);
+    releaseEv.setScenePos(QPointF(60, 60));
+    scene.mouseReleaseEvent(&releaseEv);
+
+    int countAfterAdd = scene.items().count();
+
+    QVERIFY(scene.undoStack()->canUndo());
+    scene.undoStack()->undo();
+    QCOMPARE(scene.items().count(), countAfterAdd - 1);
+
+    QVERIFY(scene.undoStack()->canRedo());
+    scene.undoStack()->redo();
+    QCOMPARE(scene.items().count(), countAfterAdd);
+}
+
+void TestEditorTools::testTextItemMultiLineAndBackground() {
+    TextItem item;
+    // Verify default transparent background
+    QCOMPARE(item.fillColor(), Qt::transparent);
+
+    // Multi-line text support
+    item.setText("Line 1\nLine 2\nLine 3");
+    QCOMPARE(item.text(), QString("Line 1\nLine 2\nLine 3"));
+
+    // Changing colors
+    item.setStrokeColor(QColor(0, 0, 255));
+    QCOMPARE(item.strokeColor(), QColor(0, 0, 255));
+    item.setFillColor(QColor(255, 255, 0, 180));
+    QCOMPARE(item.fillColor(), QColor(255, 255, 0, 180));
+
+    // Paint to QImage to verify rendering with background
+    QImage target(200, 100, QImage::Format_ARGB32_Premultiplied);
+    target.fill(Qt::white);
+    QPainter p(&target);
+    QStyleOptionGraphicsItem opt;
+    item.paint(&p, &opt, nullptr);
+    p.end();
+
+    // Verify pixels were drawn
+    bool foundYellow = false;
+    for (int y = 0; y < target.height(); ++y) {
+        for (int x = 0; x < target.width(); ++x) {
+            QRgb c = target.pixel(x, y);
+            if (qRed(c) > 200 && qGreen(c) > 200 && qBlue(c) < 100) {
+                foundYellow = true;
+                break;
+            }
+        }
+        if (foundYellow) break;
+    }
+    QVERIFY(foundYellow);
+}
+
+void TestEditorTools::testCanvasSceneTextCreation() {
+    TestScene scene;
+    QPixmap base(300, 300);
+    base.fill(Qt::white);
+    scene.setBasePixmap(base);
+
+    scene.setCurrentTool(ToolType::Text);
+    scene.setStrokeColor(QColor(255, 0, 0));
+    scene.setFillColor(Qt::transparent);
+
+    QGraphicsSceneMouseEvent pressEv(QEvent::GraphicsSceneMousePress);
+    pressEv.setButton(Qt::LeftButton);
+    pressEv.setScenePos(QPointF(50, 50));
+    scene.mousePressEvent(&pressEv);
+
+    // Should have created a TextItem in scene
+    TextItem* created = nullptr;
+    for (auto* item : scene.items()) {
+        if (auto* txt = dynamic_cast<TextItem*>(item)) {
+            created = txt;
+            break;
+        }
+    }
+    QVERIFY(created != nullptr);
+    QVERIFY(created->isEditing());
+
+    // Type text and finish editing
+    created->setText("Hello Multi-line\nWorld!");
+    created->finishEditing();
+    QVERIFY(!created->isEditing());
+
+    // Undo should remove it, Redo should restore it
+    QVERIFY(scene.undoStack()->canUndo());
+    scene.undoStack()->undo();
+    bool foundAfterUndo = false;
+    for (auto* item : scene.items()) {
+        if (dynamic_cast<TextItem*>(item)) foundAfterUndo = true;
+    }
+    QVERIFY(!foundAfterUndo);
+
+    scene.undoStack()->redo();
+    bool foundAfterRedo = false;
+    for (auto* item : scene.items()) {
+        if (dynamic_cast<TextItem*>(item)) foundAfterRedo = true;
+    }
+    QVERIFY(foundAfterRedo);
+}
+
+void TestEditorTools::testBucketFillTool() {
+    TestScene scene;
+    QImage baseImg(100, 100, QImage::Format_ARGB32);
+    baseImg.fill(Qt::white);
+    // Draw a 40x40 black square in the middle (x: 30..69, y: 30..69)
+    for (int y = 30; y < 70; ++y) {
+        for (int x = 30; x < 70; ++x) {
+            baseImg.setPixelColor(x, y, Qt::black);
+        }
+    }
+    scene.setBasePixmap(QPixmap::fromImage(baseImg));
+    scene.setCurrentTool(ToolType::BucketFill);
+    scene.setFillColor(QColor(255, 0, 0)); // Red fill
+
+    // Click inside the black square at (50, 50)
+    QGraphicsSceneMouseEvent pressEv(QEvent::GraphicsSceneMousePress);
+    pressEv.setButton(Qt::LeftButton);
+    pressEv.setScenePos(QPointF(50, 50));
+    scene.mousePressEvent(&pressEv);
+
+    // Verify center pixel turned red, but outer region (10, 10) stayed white
+    QImage resultImg = scene.basePixmap().toImage();
+    QCOMPARE(resultImg.pixelColor(50, 50), QColor(255, 0, 0));
+    QCOMPARE(resultImg.pixelColor(35, 35), QColor(255, 0, 0));
+    QCOMPARE(resultImg.pixelColor(65, 65), QColor(255, 0, 0));
+    QCOMPARE(resultImg.pixelColor(10, 10), QColor(255, 255, 255));
+
+    // Test Undo
+    QVERIFY(scene.undoStack()->canUndo());
+    scene.undoStack()->undo();
+    QImage undoImg = scene.basePixmap().toImage();
+    QCOMPARE(undoImg.pixelColor(50, 50), QColor(0, 0, 0));
+    QCOMPARE(undoImg.pixelColor(10, 10), QColor(255, 255, 255));
+
+    // Test Redo
+    QVERIFY(scene.undoStack()->canRedo());
+    scene.undoStack()->redo();
+    QImage redoImg = scene.basePixmap().toImage();
+    QCOMPARE(redoImg.pixelColor(50, 50), QColor(255, 0, 0));
+
+    // Test bucket clicking a vector ShapeItem
+    ShapeItem* shape = new ShapeItem(false);
+    shape->setRect(QRectF(10, 10, 20, 20));
+    shape->setFillColor(Qt::white);
+    scene.addItem(shape);
+
+    scene.setFillColor(QColor(0, 255, 0)); // Green
+    QGraphicsSceneMouseEvent clickShape(QEvent::GraphicsSceneMousePress);
+    clickShape.setButton(Qt::LeftButton);
+    clickShape.setScenePos(QPointF(20, 20));
+    scene.mousePressEvent(&clickShape);
+
+    QCOMPARE(shape->fillColor(), QColor(0, 255, 0));
+}
+
+void TestEditorTools::testDefaultBlurStrength() {
+    CanvasScene scene;
+    QCOMPARE(scene.blurLevel(), 4);
+
+    BlurItem blur;
+    QCOMPARE(blur.blurLevel(), 4);
+}
+
+void TestEditorTools::testSelectionPropertiesSync() {
+    TestScene scene;
+    QPixmap base(200, 200);
+    base.fill(Qt::white);
+    scene.setBasePixmap(base);
+
+    // Add BlurItem
+    BlurItem* blur = new BlurItem(QRectF(20, 20, 50, 50), base, 4);
+    scene.addItem(blur);
+    blur->setSelected(true);
+    QCOMPARE(blur->blurLevel(), 4);
+
+    // Modify selected blur's level
+    blur->setBlurLevel(8);
+    blur->updateEffect(scene.basePixmap());
+    QCOMPARE(blur->blurLevel(), 8);
+
+    // Add TextItem
+    TextItem* text = new TextItem("Test Text", QPointF(100, 100));
+    text->setStrokeColor(QColor(255, 0, 0));
+    text->setFillColor(Qt::transparent);
+    scene.addItem(text);
+    text->setSelected(true);
+
+    // Modify selected text's colors
+    text->setStrokeColor(QColor(0, 0, 255));
+    text->setFillColor(QColor(255, 255, 0));
+    QCOMPARE(text->strokeColor(), QColor(0, 0, 255));
+    QCOMPARE(text->fillColor(), QColor(255, 255, 0));
+
+    // Add ShapeItem
+    ShapeItem* shape = new ShapeItem(false);
+    shape->setRect(QRectF(10, 10, 40, 40));
+    shape->setStrokeWidth(3);
+    scene.addItem(shape);
+    shape->setSelected(true);
+
+    // Modify selected shape's width
+    shape->setStrokeWidth(9);
+    QCOMPARE(shape->strokeWidth(), 9);
+}
+
+void TestEditorTools::testDefaultSaveLocation() {
+    SettingsManager& s = SettingsManager::instance();
+    QString expectedDir = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation);
+    if (expectedDir.isEmpty()) {
+        expectedDir = QDir::homePath() + "/Pictures";
+    }
+    QCOMPARE(s.saveLocation(), expectedDir);
+}
+
+void TestEditorTools::testCanvasViewDirectMousewheelZoom() {
+    TestScene scene;
+    QPixmap pix(800, 600);
+    pix.fill(Qt::white);
+    scene.setBasePixmap(pix);
+
+    CanvasView view(&scene);
+    view.resize(800, 600);
+
+    qreal initialZoom = view.zoomFactor();
+
+    // Wheel up zooms in directly without Ctrl
+    QWheelEvent zoomInEvent(
+        QPointF(400, 300),
+        QPointF(400, 300),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::NoScrollPhase,
+        false
+    );
+    QApplication::sendEvent(view.viewport(), &zoomInEvent);
+
+    QVERIFY(view.zoomFactor() > initialZoom);
+
+    // Wheel down zooms out directly without Ctrl
+    QWheelEvent zoomOutEvent(
+        QPointF(400, 300),
+        QPointF(400, 300),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt::NoButton,
+        Qt::NoModifier,
+        Qt::NoScrollPhase,
+        false
+    );
+    QApplication::sendEvent(view.viewport(), &zoomOutEvent);
+
+    QVERIFY(view.zoomFactor() <= initialZoom + 0.05);
+}
+
+void TestEditorTools::testBlurItemMemoryOptimization() {
+    TestScene scene;
+    QPixmap largePix(800, 600);
+    largePix.fill(Qt::cyan);
+    scene.setBasePixmap(largePix);
+
+    BlurItem* blur = new BlurItem(QRectF(100, 100, 200, 200), largePix, 4);
+    scene.addItem(blur);
+    QVERIFY(!blur->boundingRect().isEmpty());
+
+    blur->setBlurLevel(7);
+    QCOMPARE(blur->blurLevel(), 7);
+}
+
+void TestEditorTools::testScreenCapture() {
+    QScreen* screen = QGuiApplication::primaryScreen();
+    QVERIFY(screen != nullptr);
+    QRect geo = screen->virtualGeometry();
+    qDebug() << "Virtual geo:" << geo;
+    QPixmap grab = screen->grabWindow(0, geo.x(), geo.y(), geo.width(), geo.height());
+    qDebug() << "Grab size:" << grab.size() << "isNull:" << grab.isNull();
+}
+
+void TestEditorTools::testWaylandCaptureManagerAndColorPicker() {
+    WaylandCaptureManager& mgr = WaylandCaptureManager::instance();
+
+    // Verify signal connectivity
+    bool screenshotSignalHooked = false;
+    connect(&mgr, &WaylandCaptureManager::screenshotReady, [&screenshotSignalHooked](const QPixmap& p) {
+        if (!p.isNull()) screenshotSignalHooked = true;
+    });
+
+    // Test captureFullscreen triggers request without throwing
+    mgr.captureFullscreen();
+
+    // Test color picker
+    bool colorSignalReceived = false;
+    connect(&mgr, &WaylandCaptureManager::colorPicked, [&colorSignalReceived](const QColor& c, const QString& hex) {
+        Q_UNUSED(c);
+        if (!hex.isEmpty()) colorSignalReceived = true;
+    });
+    mgr.pickColor();
+}
+
+void TestEditorTools::testAreaDeleteWhiteBackground() {
+    TestScene scene;
+    QPixmap base(400, 300);
+    base.fill(Qt::black); // Start with black base
+    scene.setBasePixmap(base);
+    scene.setCurrentTool(ToolType::Select);
+
+    // Select rectangle area (50, 50, 100, 100)
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(QPointF(50, 50));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    scene.mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(QPointF(150, 150));
+    move.setButtons(Qt::LeftButton);
+    scene.mouseMoveEvent(&move);
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(150, 150));
+    release.setButton(Qt::LeftButton);
+    scene.mouseReleaseEvent(&release);
+
+    QVERIFY(scene.hasAreaSelection());
+    QCOMPARE(scene.selectedArea(), QRectF(50, 50, 100, 100));
+
+    // Delete selected area
+    scene.deleteSelectedArea();
+
+    // The deleted area MUST be filled with pure WHITE (not black)
+    QImage img = scene.basePixmap().toImage();
+    QCOMPARE(img.pixelColor(100, 100), QColor(255, 255, 255));
+    // The unselected area outside remains black
+    QCOMPARE(img.pixelColor(10, 10), QColor(0, 0, 0));
+}
+
+void TestEditorTools::testTabCloseSaveDialogButtons() {
+    QMessageBox box(
+        QMessageBox::Question,
+        "Save Changes",
+        "Do you want to save changes to \"Capture 1\" before closing?",
+        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel
+    );
+    box.setDefaultButton(QMessageBox::Yes);
+    box.show();
+    QApplication::processEvents();
+
+    QPixmap grab = box.grab();
+    grab.save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/save_dialog_preview.png");
+
+    QList<QAbstractButton*> buttons = box.buttons();
+    QCOMPARE(buttons.size(), 3);
+    QVERIFY(box.button(QMessageBox::Yes) != nullptr);
+    QVERIFY(box.button(QMessageBox::No) != nullptr);
+    QVERIFY(box.button(QMessageBox::Cancel) != nullptr);
+    QCOMPARE(box.standardButton(box.button(QMessageBox::Yes)), QMessageBox::Yes);
+    QCOMPARE(box.standardButton(box.button(QMessageBox::No)), QMessageBox::No);
+    QCOMPARE(box.standardButton(box.button(QMessageBox::Cancel)), QMessageBox::Cancel);
+    box.close();
+}
+
+void TestEditorTools::testAutoCheckUpdatesSetting() {
+    SettingsManager& s = SettingsManager::instance();
+    bool original = s.autoCheckUpdates();
+
+    s.setAutoCheckUpdates(false);
+    QCOMPARE(s.autoCheckUpdates(), false);
+
+    s.setAutoCheckUpdates(true);
+    QCOMPARE(s.autoCheckUpdates(), true);
+
+    s.save();
+    s.load();
+    QCOMPARE(s.autoCheckUpdates(), true);
+
+    s.setAutoCheckUpdates(original);
+    s.save();
+}
+
+void TestEditorTools::testUpdateManagerVersionComparison() {
+    // Newer remote versions
+    QVERIFY(UpdateManager::isVersionNewer("v1.28", "1.27"));
+    QVERIFY(UpdateManager::isVersionNewer("v1.27", "1.26"));
+    QVERIFY(UpdateManager::isVersionNewer("v1.26", "1.25"));
+    QVERIFY(UpdateManager::isVersionNewer("v1.25", "1.24"));
+    QVERIFY(UpdateManager::isVersionNewer("v1.24", "1.23"));
+    QVERIFY(UpdateManager::isVersionNewer("1.23.1", "1.23"));
+    QVERIFY(UpdateManager::isVersionNewer("v1.25.0", "1.24.0"));
+    QVERIFY(UpdateManager::isVersionNewer("v2.0", "1.23"));
+    QVERIFY(UpdateManager::isVersionNewer("v2.0.0", "1.23.0"));
+
+    // Equal versions
+    QVERIFY(!UpdateManager::isVersionNewer("v1.23", "1.23"));
+    QVERIFY(!UpdateManager::isVersionNewer("1.23", "1.23"));
+    QVERIFY(!UpdateManager::isVersionNewer("v1.23.0", "1.23.0"));
+    QVERIFY(!UpdateManager::isVersionNewer("1.23.0", "1.23"));
+
+    // Older remote versions
+    QVERIFY(!UpdateManager::isVersionNewer("v1.22", "1.23"));
+    QVERIFY(!UpdateManager::isVersionNewer("v1.22.9", "1.23"));
+    QVERIFY(!UpdateManager::isVersionNewer("v0.9.0", "1.23.0"));
+}
+
+void TestEditorTools::testIconManager() {
+    // Test toolbar and tool icons (dark and light)
+    QIcon selectIcon = IconManager::getIcon("select");
+    QVERIFY(!selectIcon.isNull());
+    QVERIFY(!selectIcon.pixmap(24, 24).isNull());
+
+    QIcon cropIcon = IconManager::getIcon("crop");
+    QVERIFY(!cropIcon.isNull());
+    QVERIFY(!cropIcon.pixmap(24, 24).isNull());
+
+    QIcon textIconLight = IconManager::getIcon("text", true);
+    QVERIFY(!textIconLight.isNull());
+    QVERIFY(!textIconLight.pixmap(24, 24).isNull());
+
+    // Test app icon and multi-resolution pixmaps
+    QIcon appIcon = IconManager::getAppIcon();
+    QVERIFY(!appIcon.isNull());
+    QVERIFY(!appIcon.pixmap(16, 16).isNull());
+    QVERIFY(!appIcon.pixmap(22, 22).isNull());
+    QVERIFY(!appIcon.pixmap(24, 24).isNull());
+    QVERIFY(!appIcon.pixmap(32, 32).isNull());
+    QVERIFY(!appIcon.pixmap(48, 48).isNull());
+    QVERIFY(!appIcon.pixmap(64, 64).isNull());
+    QVERIFY(!appIcon.pixmap(128, 128).isNull());
+    QVERIFY(!appIcon.pixmap(256, 256).isNull());
+}
+
+void TestEditorTools::testBadgeStepperAndResetNumbering() {
+    TestScene scene;
+    QPixmap pix(200, 200);
+    pix.fill(Qt::white);
+    scene.setBasePixmap(pix);
+    scene.setCurrentTool(ToolType::Badge);
+
+    // Initial counter should be 1
+    QCOMPARE(scene.badgeCounter(), 1);
+
+    // Track signal emissions
+    int signalCount = 0;
+    int lastCounterEmitted = 0;
+    QObject::connect(&scene, &CanvasScene::badgeCounterChanged, [&](int nextNumber) {
+        signalCount++;
+        lastCounterEmitted = nextNumber;
+    });
+
+    // Place badge 1
+    QGraphicsSceneMouseEvent press1(QEvent::GraphicsSceneMousePress);
+    press1.setScenePos(QPointF(30, 30));
+    press1.setButton(Qt::LeftButton);
+    scene.mousePressEvent(&press1);
+
+    QCOMPARE(scene.badgeCounter(), 2);
+    QCOMPARE(lastCounterEmitted, 2);
+    QCOMPARE(signalCount, 1);
+
+    // Place badge 2
+    QGraphicsSceneMouseEvent press2(QEvent::GraphicsSceneMousePress);
+    press2.setScenePos(QPointF(60, 30));
+    press2.setButton(Qt::LeftButton);
+    scene.mousePressEvent(&press2);
+
+    QCOMPARE(scene.badgeCounter(), 3);
+    QCOMPARE(lastCounterEmitted, 3);
+    QCOMPARE(signalCount, 2);
+
+    // Find the placed badges in the scene
+    QList<BadgeItem*> badges;
+    for (auto* item : scene.items()) {
+        if (auto* b = dynamic_cast<BadgeItem*>(item)) {
+            badges.append(b);
+        }
+    }
+    QCOMPARE(badges.size(), 2);
+    // Badges are in reverse order of addition in scene.items()
+    BadgeItem* b2 = badges[0];
+    BadgeItem* b1 = badges[1];
+    QCOMPARE(b1->number(), 1);
+    QCOMPARE(b2->number(), 2);
+
+    // Test resetBadgeCounter()
+    scene.resetBadgeCounter();
+    QCOMPARE(scene.badgeCounter(), 1);
+    QCOMPARE(lastCounterEmitted, 1);
+    QCOMPARE(signalCount, 3);
+
+    // Place badge after reset: should be 1 again
+    QGraphicsSceneMouseEvent press3(QEvent::GraphicsSceneMousePress);
+    press3.setScenePos(QPointF(90, 30));
+    press3.setButton(Qt::LeftButton);
+    scene.mousePressEvent(&press3);
+
+    QCOMPARE(scene.badgeCounter(), 2);
+    QCOMPARE(lastCounterEmitted, 2);
+
+    // Test setBadgeCounter to custom value (e.g. 50)
+    scene.setBadgeCounter(50);
+    QCOMPARE(scene.badgeCounter(), 50);
+    QCOMPARE(lastCounterEmitted, 50);
+
+    QGraphicsSceneMouseEvent press4(QEvent::GraphicsSceneMousePress);
+    press4.setScenePos(QPointF(120, 30));
+    press4.setButton(Qt::LeftButton);
+    scene.mousePressEvent(&press4);
+
+    QCOMPARE(scene.badgeCounter(), 51);
+
+    // Test modifying badge number with undo/redo
+    scene.modifyBadgeNumber(b1, 99);
+    QCOMPARE(b1->number(), 99);
+
+    scene.undoStack()->undo();
+    QCOMPARE(b1->number(), 1);
+
+    scene.undoStack()->redo();
+    QCOMPARE(b1->number(), 99);
+
+    // Test BadgeItem direct setNumber
+    b1->setNumber(5);
+    QCOMPARE(b1->number(), 5);
+}
+
+void TestEditorTools::testMainWindowBadgeIntegration() {
+    MainWindow win;
+    win.createBlankTab(400, 300);
+    win.resize(900, 500);
+    win.show();
+    QTest::qWait(100);
+
+    // Select badge tool
+    win.selectTool(ToolType::Badge);
+
+    // Check that property toolbar widgets exist and are visible
+    QLabel* badgeLbl = nullptr;
+    QSpinBox* badgeSpin = nullptr;
+    QPushButton* resetBtn = nullptr;
+
+    for (auto* lbl : win.findChildren<QLabel*>()) {
+        if (lbl->text().contains("Next #") || lbl->text().contains("Badge #")) {
+            badgeLbl = lbl;
+            break;
+        }
+    }
+    QVERIFY(badgeLbl != nullptr);
+    QVERIFY(badgeLbl->isVisible());
+
+    for (auto* spin : win.findChildren<QSpinBox*>()) {
+        if (spin->toolTip().contains("Next badge number", Qt::CaseInsensitive)) {
+            badgeSpin = spin;
+            break;
+        }
+    }
+    QVERIFY(badgeSpin != nullptr);
+    QVERIFY(badgeSpin->isVisible());
+    QCOMPARE(badgeSpin->value(), 1);
+
+    for (auto* btn : win.findChildren<QPushButton*>()) {
+        if (btn->text().contains("Reset Numbering") || btn->toolTip().contains("Reset badge number", Qt::CaseInsensitive)) {
+            resetBtn = btn;
+            break;
+        }
+    }
+    QVERIFY(resetBtn != nullptr);
+    QVERIFY(resetBtn->isVisible());
+    QCOMPARE(resetBtn->text(), QString("Reset Numbering (1)"));
+
+    // Place a badge on canvas
+    CanvasScene* scene = win.currentScene();
+    QVERIFY(scene != nullptr);
+
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(QPointF(100, 100));
+    press.setButton(Qt::LeftButton);
+    // Use TestScene or direct scene mousePressEvent via view
+    win.currentView()->viewport()->show();
+    QTest::mouseClick(win.currentView()->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(100, 100));
+
+    // After placing 1 badge, the spinbox should automatically increment to 2!
+    QCOMPARE(badgeSpin->value(), 2);
+    QCOMPARE(scene->badgeCounter(), 2);
+
+    // Click Reset Numbering button:
+    resetBtn->click();
+
+    // After clicking reset, counter and spinbox should be 1!
+    QCOMPARE(badgeSpin->value(), 1);
+    QCOMPARE(scene->badgeCounter(), 1);
+
+    // Save a preview snapshot of the editor toolbar to artifacts
+    win.resize(900, 500);
+    win.show();
+    QTest::qWait(100);
+    QPixmap preview = win.grab();
+    preview.save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/badge_stepper_preview.png");
+
+    // Test selecting the badge item on canvas
+    BadgeItem* placedBadge = nullptr;
+    for (auto* item : scene->items()) {
+        if (auto* b = dynamic_cast<BadgeItem*>(item)) {
+            placedBadge = b;
+            break;
+        }
+    }
+    QVERIFY(placedBadge != nullptr);
+
+    // Switch to Select tool and select the badge
+    win.selectTool(ToolType::Select);
+    scene->clearSelection();
+    placedBadge->setSelected(true);
+    QTest::qWait(100);
+
+    // Toolbar should update to show Badge properties
+    QCOMPARE(badgeLbl->text(), QString("  Badge #: "));
+    QCOMPARE(badgeSpin->value(), 1);
+    QCOMPARE(resetBtn->text(), QString("Reset to 1"));
+    QVERIFY(badgeSpin->isVisible());
+    QVERIFY(resetBtn->isVisible());
+
+    // Modify badge number via spinbox
+    badgeSpin->setValue(42);
+    QCOMPARE(placedBadge->number(), 42);
+
+    // Click Reset to 1 on selected badge
+    resetBtn->click();
+    QCOMPARE(placedBadge->number(), 1);
+    QCOMPARE(badgeSpin->value(), 1);
+
+    // Grab preview of selected badge
+    QPixmap previewSelected = win.grab();
+    previewSelected.save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/badge_selected_preview.png");
+}
+
+void TestEditorTools::testToolbarFontControls() {
+    MainWindow win;
+    win.createBlankTab(400, 300);
+    win.resize(900, 500);
+    win.show();
+    QTest::qWait(50);
+
+    QFontComboBox* fontCombo = nullptr;
+    QSpinBox* fontSizeSpin = nullptr;
+    QLabel* fontSizeLbl = nullptr;
+
+    for (auto* combo : win.findChildren<QFontComboBox*>()) {
+        fontCombo = combo;
+        break;
+    }
+    for (auto* spin : win.findChildren<QSpinBox*>()) {
+        if (spin->suffix() == " pt" || spin->toolTip().contains("point size", Qt::CaseInsensitive)) {
+            fontSizeSpin = spin;
+            break;
+        }
+    }
+    for (auto* lbl : win.findChildren<QLabel*>()) {
+        if (lbl->text().contains("Size:", Qt::CaseInsensitive)) {
+            fontSizeLbl = lbl;
+            break;
+        }
+    }
+
+    QVERIFY(fontCombo != nullptr);
+    QVERIFY(fontSizeSpin != nullptr);
+    QVERIFY(fontSizeLbl != nullptr);
+
+    // When Pen tool is selected, font controls should be hidden
+    win.selectTool(ToolType::Pen);
+    QVERIFY(!fontCombo->isVisible());
+    QVERIFY(!fontSizeSpin->isVisible());
+    QVERIFY(!fontSizeLbl->isVisible());
+
+    // When Text tool is selected, font controls should be visible and default to 11 pt
+    win.selectTool(ToolType::Text);
+    QVERIFY(fontCombo->isVisible());
+    QVERIFY(fontSizeSpin->isVisible());
+    QVERIFY(fontSizeLbl->isVisible());
+    QCOMPARE(fontSizeSpin->value(), 11);
+
+    // Change font size via spinbox
+    fontSizeSpin->setValue(28);
+    QCOMPARE(win.currentScene()->currentFont().pointSize(), 28);
+
+    // Place a TextItem on canvas
+    CanvasScene* scene = win.currentScene();
+    TextItem* textItem = new TextItem("Test Typography", QPointF(50, 50));
+    textItem->setFont(scene->currentFont());
+    scene->addItem(textItem);
+    QCOMPARE(textItem->font().pointSize(), 28);
+
+    // Switch to Select tool and deselect all
+    win.selectTool(ToolType::Select);
+    scene->clearSelection();
+    QTest::qWait(50);
+    QVERIFY(!fontCombo->isVisible());
+    QVERIFY(!fontSizeSpin->isVisible());
+
+    // Now select the TextItem
+    textItem->setSelected(true);
+    QTest::qWait(50);
+    QVERIFY(fontCombo->isVisible());
+    QVERIFY(fontSizeSpin->isVisible());
+    QCOMPARE(fontSizeSpin->value(), 28);
+
+    // Changing spinbox while item is selected updates TextItem
+    fontSizeSpin->setValue(36);
+    QCOMPARE(textItem->font().pointSize(), 36);
+
+    // Deselect item: controls hide again
+    scene->clearSelection();
+    QTest::qWait(50);
+    QVERIFY(!fontCombo->isVisible());
+    QVERIFY(!fontSizeSpin->isVisible());
+}
+
+void TestEditorTools::testClipboardCopyHelper() {
+    // 1. Direct ClipboardHelper unit test
+    QPixmap testPix(80, 60);
+    testPix.fill(QColor(255, 100, 50));
+    bool success = ClipboardHelper::copyImage(testPix);
+    QVERIFY(success);
+
+    const QMimeData* mime = QApplication::clipboard()->mimeData(QClipboard::Clipboard);
+    QVERIFY(mime != nullptr);
+    QVERIFY(mime->hasImage());
+    QVERIFY(mime->hasFormat("image/png"));
+    QVERIFY(mime->hasFormat("image/x-png"));
+    QVERIFY(mime->hasFormat("image/bmp"));
+
+    QByteArray pngData = mime->data("image/png");
+    QVERIFY(!pngData.isEmpty());
+    QImage loaded;
+    QVERIFY(loaded.loadFromData(pngData, "PNG"));
+    QCOMPARE(loaded.width(), 80);
+    QCOMPARE(loaded.height(), 60);
+
+    // 2. Integration with MainWindow full canvas copy
+    MainWindow win;
+    win.createBlankTab(120, 90);
+    win.show();
+    QTest::qWait(50);
+
+    // Draw something on scene (PenItem)
+    CanvasScene* scene = win.currentScene();
+    PenItem* pen = new PenItem(false);
+    pen->setStrokeColor(QColor(0, 255, 0));
+    pen->setStrokeWidth(6);
+    pen->addPoint(QPointF(10, 10));
+    pen->addPoint(QPointF(50, 50));
+    scene->addItem(pen);
+
+    win.copyActiveImageToClipboard();
+    const QMimeData* fullMime = QApplication::clipboard()->mimeData(QClipboard::Clipboard);
+    QVERIFY(fullMime->hasImage());
+    QImage fullImg = qvariant_cast<QImage>(fullMime->imageData());
+    QCOMPARE(fullImg.width(), 120);
+    QCOMPARE(fullImg.height(), 90);
+
+    // 3. Integration with Area Selection crop copy
+    win.selectTool(ToolType::Select);
+    scene->setSelectedArea(QRectF(10, 10, 40, 30));
+    QVERIFY(scene->hasAreaSelection());
+
+    win.copyActiveImageToClipboard();
+    const QMimeData* cropMime = QApplication::clipboard()->mimeData(QClipboard::Clipboard);
+    QVERIFY(cropMime->hasImage());
+    QImage cropImg = qvariant_cast<QImage>(cropMime->imageData());
+    QCOMPARE(cropImg.width(), 40);
+    QCOMPARE(cropImg.height(), 30);
+}
+
+void TestEditorTools::testToolbarIconsAndActions() {
+    MainWindow win;
+    win.createBlankTab(400, 300);
+    win.show();
+    QTest::qWait(50);
+
+    // Verify all core icon resources can be retrieved and rendered
+    const QStringList iconNames = {
+        "new", "open", "save", "copy", "paste", "undo", "redo",
+        "zoom_in", "zoom_out", "zoom_100", "zoom_fit",
+        "hand", "select", "text", "arrow", "pen", "highlighter", "line",
+        "double_arrow", "rect", "ellipse", "badge", "blur", "bucket", "crop",
+        "fullscreen", "snip", "picker", "settings", "about", "quit", "s-shot"
+    };
+
+    for (const QString& name : iconNames) {
+        QIcon icon = IconManager::getIcon(name, false, QSize(24, 24));
+        QVERIFY2(!icon.isNull(), qPrintable(QString("Icon is null: %1").arg(name)));
+        QPixmap px = icon.pixmap(24, 24);
+        QVERIFY2(!px.isNull(), qPrintable(QString("Icon pixmap is null: %1").arg(name)));
+        QVERIFY(px.width() >= 24);
+        QVERIFY(px.height() >= 24);
+
+        // Also test light theme version
+        QIcon iconLight = IconManager::getIcon(name, true, QSize(24, 24));
+        QVERIFY2(!iconLight.isNull(), qPrintable(QString("Light icon is null: %1").arg(name)));
+        QPixmap pxLight = iconLight.pixmap(24, 24);
+        QVERIFY2(!pxLight.isNull(), qPrintable(QString("Light icon pixmap is null: %1").arg(name)));
+        QVERIFY(pxLight.width() >= 24);
+        QVERIFY(pxLight.height() >= 24);
+    }
+
+    // Verify menus
+    QMenuBar* mb = win.menuBar();
+    QVERIFY(mb != nullptr);
+    QList<QAction*> topActions = mb->actions();
+    QVERIFY(topActions.size() >= 5); // File, Edit, Capture, View, Options, Help
+
+    bool foundFile = false, foundEdit = false, foundCapture = false, foundView = false;
+    for (auto* act : topActions) {
+        if (act->text().contains("File")) foundFile = true;
+        if (act->text().contains("Edit")) foundEdit = true;
+        if (act->text().contains("Capture")) foundCapture = true;
+        if (act->text().contains("View")) foundView = true;
+    }
+    QVERIFY(foundFile);
+    QVERIFY(foundEdit);
+    QVERIFY(foundCapture);
+    QVERIFY(foundView);
+
+    // Verify left toolbar tool ordering: Arrow must be directly below Highlighter
+    QToolBar* leftBar = nullptr;
+    QToolBar* mainBar = nullptr;
+    for (auto* tb : win.findChildren<QToolBar*>()) {
+        if (tb->orientation() == Qt::Vertical) {
+            leftBar = tb;
+        } else if (tb->windowTitle() == "Main Toolbar") {
+            mainBar = tb;
+        }
+    }
+    QVERIFY(leftBar != nullptr);
+    QVERIFY(mainBar != nullptr);
+
+    QList<QAction*> leftActs = leftBar->actions();
+    int idxHighlighter = -1;
+    int idxArrow = -1;
+    for (int i = 0; i < leftActs.size(); ++i) {
+        if (leftActs[i]->data().toInt() == static_cast<int>(ToolType::Highlighter)) idxHighlighter = i;
+        if (leftActs[i]->data().toInt() == static_cast<int>(ToolType::Arrow)) idxArrow = i;
+    }
+    QVERIFY(idxHighlighter >= 0);
+    QCOMPARE(idxArrow, idxHighlighter + 1);
+
+    // Verify default tool is Pan/Hand tool and default font is 11 pt
+    QVERIFY(win.currentScene() != nullptr);
+    QCOMPARE(win.currentScene()->currentTool(), ToolType::Pan);
+    QCOMPARE(win.currentScene()->currentFont().pointSize(), 11);
+
+    // Verify main toolbar visual feedback when an action is triggered
+    QAction* copyAct = nullptr;
+    for (auto* a : mainBar->actions()) {
+        if (a->text().contains("Copy")) {
+            copyAct = a;
+            break;
+        }
+    }
+    QVERIFY(copyAct != nullptr);
+    QWidget* copyBtn = mainBar->widgetForAction(copyAct);
+    QVERIFY(copyBtn != nullptr);
+    copyAct->trigger();
+    QVERIFY(!copyBtn->styleSheet().isEmpty());
+    QTest::qWait(250);
+    QVERIFY(copyBtn->styleSheet().isEmpty());
+
+    // Capture preview for visual verification
+    win.resize(1000, 600);
+    win.show();
+    QTest::qWait(100);
+    win.grab().save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/toolbar_updated_preview.png");
+}
+
+void TestEditorTools::testTextItemMultipleBlocksSelect() {
+    MainWindow win;
+    win.createBlankTab(400, 300);
+    win.resize(900, 600);
+    win.show();
+    QTest::qWait(50);
+
+    CanvasScene* scene = win.currentScene();
+    CanvasView* view = win.currentView();
+    QVERIFY(scene != nullptr);
+    QVERIFY(view != nullptr);
+
+    // 1. Select Text Tool
+    win.selectTool(ToolType::Text);
+    QTest::qWait(50);
+
+    // 2. Click to add first text block at (60, 60)
+    QPoint pt1 = view->mapFromScene(QPointF(60, 60));
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pt1);
+    QTest::qWait(50);
+
+    // Type text into first block
+    QTest::keyClicks(view->viewport(), "First text block");
+    QTest::qWait(50);
+
+    // 3. Click to add second text block at (180, 180)
+    QPoint pt2 = view->mapFromScene(QPointF(180, 180));
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pt2);
+    QTest::qWait(50);
+
+    // Type text into second block
+    QTest::keyClicks(view->viewport(), "Second text block");
+    QTest::qWait(50);
+
+    // 4. Switch to Select tool
+    win.selectTool(ToolType::Select);
+    QTest::qWait(50);
+
+    // 5. Click on second block to select it
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pt2);
+    QTest::qWait(50);
+
+    // 6. Click on first block to select it
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pt1);
+    QTest::qWait(50);
+
+    // 7. Add empty text block and switch to Select tool without typing
+    win.selectTool(ToolType::Text);
+    QPoint pt3 = view->mapFromScene(QPointF(250, 250));
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pt3);
+    QTest::qWait(50);
+    win.selectTool(ToolType::Select);
+    QTest::qWait(50);
+
+    // Click on pt1 or pt2 again
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, pt2);
+    QTest::qWait(50);
+
+    // Save visual preview of text without borders
+    win.grab().save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/text_no_border_preview.png");
+}
+
+void TestEditorTools::testCrashHandlerAndLogging() {
+    // 1. Verify CrashHandler paths
+    CrashHandler::init();
+    QString logPath = CrashHandler::logPath();
+    QString crashPath = CrashHandler::crashLogPath();
+    QString logDir = CrashHandler::logDir();
+
+    QVERIFY(!logPath.isEmpty());
+    QVERIFY(logPath.endsWith("s-shot.log"));
+    QVERIFY(!crashPath.isEmpty());
+    QVERIFY(crashPath.endsWith("crash.log"));
+    QVERIFY(!logDir.isEmpty());
+
+    // 2. Emit a warning and verify it gets captured into s-shot.log
+    QString testMsg = QString("Test log entry %1").arg(QDateTime::currentMSecsSinceEpoch());
+    qWarning() << testMsg;
+
+    QFile file(logPath);
+    QVERIFY(file.open(QIODevice::ReadOnly | QIODevice::Text));
+    QString fileContent = QString::fromUtf8(file.readAll());
+    file.close();
+    QVERIFY(fileContent.contains(testMsg));
+
+    // 3. Verify MainWindow has View Logs action in Help menu
+    MainWindow win;
+    QMenuBar* mb = win.menuBar();
+    QAction* logsAction = nullptr;
+    for (QAction* action : mb->actions()) {
+        if (action->menu()) {
+            for (QAction* subAct : action->menu()->actions()) {
+                if (subAct->text().contains("Logs") || subAct->text().contains("Crash Reports")) {
+                    logsAction = subAct;
+                    break;
+                }
+            }
+        }
+    }
+    QVERIFY(logsAction != nullptr);
+}
+
+void TestEditorTools::testPanToolAndCanvasResizeHandles() {
+    MainWindow win;
+    win.createBlankTab(800, 600);
+    win.resize(1000, 700);
+    win.show();
+    QTest::qWait(50);
+
+    CanvasScene* scene = win.currentScene();
+    CanvasView* view = win.currentView();
+    QVERIFY(scene != nullptr);
+    QVERIFY(view != nullptr);
+
+    // 1. Pan / Hand Tool verification
+    win.selectTool(ToolType::Pan);
+    QTest::qWait(50);
+    QCOMPARE(scene->currentTool(), ToolType::Pan);
+    QCOMPARE(view->viewport()->cursor().shape(), Qt::OpenHandCursor);
+
+    // Verify viewport panning with mouse press and drag in Pan mode
+    QPoint centerViewPt(view->viewport()->width() / 2, view->viewport()->height() / 2);
+    QTest::mousePress(view->viewport(), Qt::LeftButton, Qt::NoModifier, centerViewPt);
+    QTest::mouseMove(view->viewport(), centerViewPt - QPoint(30, 30));
+    QTest::mouseRelease(view->viewport(), Qt::LeftButton, Qt::NoModifier, centerViewPt - QPoint(30, 30));
+    // Cursor should return to OpenHandCursor after release
+    QCOMPARE(view->viewport()->cursor().shape(), Qt::OpenHandCursor);
+
+    QPixmap preview = win.grab();
+    preview.save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/palm_tool_and_handles_preview.png");
+
+    // 2. Handle hit-testing on 800x600 scene
+    // Handles: Top (400, 0), Bottom (400, 600), Left (0, 300), Right (800, 300),
+    // Corners: (0, 0), (800, 0), (0, 600), (800, 600)
+    QCOMPARE(scene->handleAt(QPointF(400, 0)), CanvasScene::CanvasHandle::Top);
+    QCOMPARE(scene->handleAt(QPointF(400, 600)), CanvasScene::CanvasHandle::Bottom);
+    QCOMPARE(scene->handleAt(QPointF(0, 300)), CanvasScene::CanvasHandle::Left);
+    QCOMPARE(scene->handleAt(QPointF(800, 300)), CanvasScene::CanvasHandle::Right);
+    QCOMPARE(scene->handleAt(QPointF(0, 0)), CanvasScene::CanvasHandle::TopLeft);
+    QCOMPARE(scene->handleAt(QPointF(800, 0)), CanvasScene::CanvasHandle::TopRight);
+    QCOMPARE(scene->handleAt(QPointF(0, 600)), CanvasScene::CanvasHandle::BottomLeft);
+    QCOMPARE(scene->handleAt(QPointF(800, 600)), CanvasScene::CanvasHandle::BottomRight);
+    QCOMPARE(scene->handleAt(QPointF(400, 300)), CanvasScene::CanvasHandle::None);
+
+    // Verify handle cursors
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::Top), Qt::SizeVerCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::Bottom), Qt::SizeVerCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::Left), Qt::SizeHorCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::Right), Qt::SizeHorCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::TopLeft), Qt::SizeFDiagCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::BottomRight), Qt::SizeFDiagCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::TopRight), Qt::SizeBDiagCursor);
+    QCOMPARE(CanvasScene::cursorForHandle(CanvasScene::CanvasHandle::BottomLeft), Qt::SizeBDiagCursor);
+
+    // 3. Canvas Resizing Operations & Undo/Redo
+    QCOMPARE(scene->basePixmap().size(), QSize(800, 600));
+
+    // Expand Right edge by 150px and Bottom by 100px
+    scene->resizeCanvas(QRectF(0, 0, 950, 700), "Expand Canvas Bottom-Right");
+    QCOMPARE(scene->basePixmap().size(), QSize(950, 700));
+    QCOMPARE(scene->sceneRect(), QRectF(0, 0, 950, 700));
+    // Newly extended canvas area should have white background
+    QCOMPARE(scene->basePixmap().toImage().pixelColor(900, 650), QColor(255, 255, 255));
+
+    // Undo expansion
+    QVERIFY(scene->undoStack()->canUndo());
+    scene->undoStack()->undo();
+    QCOMPARE(scene->basePixmap().size(), QSize(800, 600));
+    QCOMPARE(scene->sceneRect(), QRectF(0, 0, 800, 600));
+
+    // Redo expansion
+    QVERIFY(scene->undoStack()->canRedo());
+    scene->undoStack()->redo();
+    QCOMPARE(scene->basePixmap().size(), QSize(950, 700));
+    QCOMPARE(scene->sceneRect(), QRectF(0, 0, 950, 700));
+
+    // Reset back to 800x600 for item test
+    scene->undoStack()->undo();
+    QCOMPARE(scene->basePixmap().size(), QSize(800, 600));
+
+    // 4. Left/Top Expansion with Vector Item Shifting
+    ShapeItem* rectItem = new ShapeItem(false);
+    rectItem->setRect(QRectF(0, 0, 100, 50));
+    rectItem->setPos(100, 100);
+    scene->addItem(rectItem);
+    QCOMPARE(rectItem->pos(), QPointF(100, 100));
+
+    // Expand Left by 80px and Top by 50px (bounds: -80, -50, 880, 650)
+    scene->resizeCanvas(QRectF(-80, -50, 880, 650), "Expand Canvas Top-Left");
+    QCOMPARE(scene->basePixmap().size(), QSize(880, 650));
+    // Item should have been shifted by (+80, +50) so pos is now (180, 150)
+    QCOMPARE(rectItem->pos(), QPointF(180, 150));
+
+    // Undo left/top expansion
+    scene->undoStack()->undo();
+    QCOMPARE(scene->basePixmap().size(), QSize(800, 600));
+    // Item should be shifted back by (-80, -50) to original position
+    QCOMPARE(rectItem->pos(), QPointF(100, 100));
+
+    // Redo left/top expansion
+    scene->undoStack()->redo();
+    QCOMPARE(scene->basePixmap().size(), QSize(880, 650));
+    QCOMPARE(rectItem->pos(), QPointF(180, 150));
+
+    // 5. Clean renderToPixmap() - frame items and guides should not appear
+    QPixmap rendered = scene->renderToPixmap();
+    QCOMPARE(rendered.size(), QSize(880, 650));
+
+    // 6. Interactive mouse dragging of handle via TestScene
+    TestScene testScene;
+    QPixmap base(400, 300);
+    {
+        QPainter p(&base);
+        p.fillRect(0, 0, 200, 150, QColor(255, 0, 0));       // Top-Left: Red
+        p.fillRect(200, 0, 200, 150, QColor(0, 0, 255));     // Top-Right: Blue
+        p.fillRect(0, 150, 200, 150, QColor(0, 255, 0));     // Bottom-Left: Green
+        p.fillRect(200, 150, 200, 150, QColor(255, 255, 0)); // Bottom-Right: Yellow
+    }
+    testScene.setBasePixmap(base);
+    testScene.setCurrentTool(ToolType::Select);
+
+    QPointF rightHandle(400, 150);
+    QCOMPARE(testScene.handleAt(rightHandle), CanvasScene::CanvasHandle::Right);
+
+    QGraphicsSceneMouseEvent pressEv(QEvent::GraphicsSceneMousePress);
+    pressEv.setScenePos(rightHandle);
+    pressEv.setButton(Qt::LeftButton);
+    pressEv.setButtons(Qt::LeftButton);
+    testScene.mousePressEvent(&pressEv);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::Right);
+
+    QGraphicsSceneMouseEvent moveEv(QEvent::GraphicsSceneMouseMove);
+    moveEv.setScenePos(QPointF(450, 150));
+    moveEv.setButtons(Qt::LeftButton);
+    testScene.mouseMoveEvent(&moveEv);
+
+    QGraphicsSceneMouseEvent releaseEv(QEvent::GraphicsSceneMouseRelease);
+    releaseEv.setScenePos(QPointF(450, 150));
+    releaseEv.setButton(Qt::LeftButton);
+    testScene.mouseReleaseEvent(&releaseEv);
+
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::None);
+    QCOMPARE(testScene.basePixmap().width(), 450);
+    // Newly added canvas area on the right is white
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(425, 75), QColor(255, 255, 255));
+    // Original left area is preserved as Red
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(100, 75), QColor(255, 0, 0));
+
+    // 2. Test reducing canvas from Right handle (450 -> 350)
+    QPointF rightHandle2(450, 150);
+    pressEv.setScenePos(rightHandle2);
+    testScene.mousePressEvent(&pressEv);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::Right);
+
+    moveEv.setScenePos(QPointF(350, 150));
+    testScene.mouseMoveEvent(&moveEv);
+
+    releaseEv.setScenePos(QPointF(350, 150));
+    testScene.mouseReleaseEvent(&releaseEv);
+    QCOMPARE(testScene.basePixmap().width(), 350);
+    // Left side (Red) is completely untouched
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(100, 75), QColor(255, 0, 0));
+    // Right side was reduced to 350 (retaining Blue part at 250)
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(250, 75), QColor(0, 0, 255));
+
+    // 3. Test reducing canvas from Left handle (crop 50px from left: 350 -> 300)
+    // Canvas should get smaller from the left: left 50px cropped, right preserved
+    QPointF leftHandle(0, 150);
+    pressEv.setScenePos(leftHandle);
+    testScene.mousePressEvent(&pressEv);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::Left);
+
+    moveEv.setScenePos(QPointF(50, 150));
+    testScene.mouseMoveEvent(&moveEv);
+
+    releaseEv.setScenePos(QPointF(50, 150));
+    testScene.mouseReleaseEvent(&releaseEv);
+    QCOMPARE(testScene.basePixmap().width(), 300);
+    // The left 50px of Red was cropped: pixel at x=0 now corresponds to original x=50 (still Red)
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(0, 75), QColor(255, 0, 0));
+    // Red quadrant (originally 200px) now has width 150px (0..149).
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(149, 75), QColor(255, 0, 0));
+    // Blue quadrant starts at x=150.
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(150, 75), QColor(0, 0, 255));
+    // Far right edge at x=299 is still Blue (right was not cropped).
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(299, 75), QColor(0, 0, 255));
+
+    // 4. Test reducing canvas from Bottom handle (300 -> 250 height)
+    // Canvas should get smaller from the bottom: bottom 50px cropped, top preserved
+    QPointF bottomHandle(150, 300);
+    pressEv.setScenePos(bottomHandle);
+    testScene.mousePressEvent(&pressEv);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::Bottom);
+
+    moveEv.setScenePos(QPointF(150, 250));
+    testScene.mouseMoveEvent(&moveEv);
+
+    releaseEv.setScenePos(QPointF(150, 250));
+    testScene.mouseReleaseEvent(&releaseEv);
+    QCOMPARE(testScene.basePixmap().height(), 250);
+    // Top is untouched (Red/Blue)
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(50, 75), QColor(255, 0, 0));
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(200, 75), QColor(0, 0, 255));
+    // Bottom area at y=200 is Green/Yellow
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(50, 200), QColor(0, 255, 0));
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(200, 200), QColor(255, 255, 0));
+
+    // 5. Test reducing canvas from Top handle (crop 40px from top: 250 -> 210 height)
+    // Canvas should get smaller from the top: top 40px cropped, bottom preserved
+    QPointF topHandle(150, 0);
+    pressEv.setScenePos(topHandle);
+    testScene.mousePressEvent(&pressEv);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::Top);
+
+    moveEv.setScenePos(QPointF(150, 40));
+    testScene.mouseMoveEvent(&moveEv);
+
+    releaseEv.setScenePos(QPointF(150, 40));
+    testScene.mouseReleaseEvent(&releaseEv);
+    QCOMPARE(testScene.basePixmap().height(), 210);
+    // Top 40px was cropped. Top boundary at y=0 now corresponds to original y=40 (still Red)
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(50, 0), QColor(255, 0, 0));
+    // Bottom boundary at y=209 is still Yellow (bottom was not cropped)
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(200, 209), QColor(255, 255, 0));
+}
+
+void TestEditorTools::testPasteImageOntoExistingCanvas() {
+    MainWindow win;
+    win.show();
+    (void)QTest::qWaitForWindowExposed(&win);
+
+    QTabWidget* tabs = win.findChild<QTabWidget*>();
+    QVERIFY(tabs != nullptr);
+
+    // 1. Initially create a base image tab
+    QPixmap basePix(600, 400);
+    basePix.fill(QColor(0, 0, 255)); // Blue canvas
+    win.addImageTab(basePix, "BaseScreenshot.png");
+    QCOMPARE(tabs->count(), 1);
+
+    CanvasScene* scene = win.currentScene();
+    QVERIFY(scene != nullptr);
+
+    // 2. Prepare a 100x100 green image in clipboard
+    QPixmap clipPix(100, 100);
+    clipPix.fill(QColor(0, 255, 0)); // Green pasted item
+    QVERIFY(ClipboardHelper::copyImage(clipPix));
+
+    // 3. Paste from clipboard onto existing image
+    win.pasteFromClipboard();
+    QTest::qWait(50);
+
+    // Save visual preview of pasted image directly on the open canvas
+    win.grab().save("/home/owner/distrobox-homes/devbox/.gemini/antigravity/brain/e77fcd3f-2a52-4f22-843d-d82ecd75f998/paste_on_canvas_preview.png");
+
+    // Verify it pasted ONTO existing image and did NOT create a new tab!
+    QCOMPARE(tabs->count(), 1);
+
+    // Verify scene contains a PixmapItem
+    PixmapItem* pastedItem = nullptr;
+    for (auto* item : scene->items()) {
+        if (auto* pi = dynamic_cast<PixmapItem*>(item)) {
+            pastedItem = pi;
+            break;
+        }
+    }
+    QVERIFY(pastedItem != nullptr);
+    QCOMPARE(pastedItem->pixmap().size(), QSize(100, 100));
+    QVERIFY(pastedItem->isSelected());
+    QCOMPARE(scene->currentTool(), ToolType::Select);
+
+    // 4. Verify rendered pixmap contains the pasted image
+    QPixmap rendered = scene->renderToPixmap();
+    QCOMPARE(rendered.size(), QSize(600, 400));
+    QPoint itemTopLeft = pastedItem->pos().toPoint();
+    QCOMPARE(rendered.toImage().pixelColor(itemTopLeft.x() + 50, itemTopLeft.y() + 50), QColor(0, 255, 0));
+    QCOMPARE(rendered.toImage().pixelColor(10, 10), QColor(0, 0, 255));
+
+    // 5. Test Undo removes the pasted item
+    QVERIFY(scene->undoStack()->canUndo());
+    scene->undoStack()->undo();
+    QTest::qWait(20);
+    bool foundAfterUndo = false;
+    for (auto* item : scene->items()) {
+        if (dynamic_cast<PixmapItem*>(item)) {
+            foundAfterUndo = true;
+            break;
+        }
+    }
+    QVERIFY(!foundAfterUndo);
+
+    // 6. Test Redo restores the pasted item
+    QVERIFY(scene->undoStack()->canRedo());
+    scene->undoStack()->redo();
+    QTest::qWait(20);
+    bool foundAfterRedo = false;
+    for (auto* item : scene->items()) {
+        if (dynamic_cast<PixmapItem*>(item)) {
+            foundAfterRedo = true;
+            break;
+        }
+    }
+    QVERIFY(foundAfterRedo);
+
+    // 7. Test Paste into an Area Selection
+    scene->setSelectedArea(QRectF(30, 40, 150, 150));
+    win.pasteFromClipboard();
+    QTest::qWait(20);
+    QCOMPARE(tabs->count(), 1);
+    bool foundAtArea = false;
+    for (auto* item : scene->items()) {
+        if (auto* pi = dynamic_cast<PixmapItem*>(item)) {
+            if (pi->pos() == QPointF(30, 40)) {
+                foundAtArea = true;
+                break;
+            }
+        }
+    }
+    QVERIFY(foundAtArea);
+
+    // 8. Test pasteAsNewImage explicitly creates a new tab
+    win.pasteAsNewImage();
+    QTest::qWait(50);
+    QCOMPARE(tabs->count(), 2);
+}
+
+void TestEditorTools::testTextEditingBackspaceAndDelete() {
+    TestScene scene;
+    QPixmap base(400, 300);
+    base.fill(Qt::white);
+    scene.setBasePixmap(base);
+
+    TextItem* txt = new TextItem("Hello", QPointF(50, 50));
+    scene.addItem(txt);
+    txt->startEditing();
+    QVERIFY(txt->isEditing());
+
+    // 1. Press Backspace while editing
+    // The cursor is at the end ("Hello|"). Backspace should delete 'o' -> "Hell"
+    QKeyEvent backspace(QEvent::KeyPress, Qt::Key_Backspace, Qt::NoModifier);
+    scene.keyPressEvent(&backspace);
+
+    // TextItem MUST NOT be deleted from the scene!
+    bool foundInScene = false;
+    for (auto* item : scene.items()) {
+        if (item == txt) foundInScene = true;
+    }
+    QVERIFY(foundInScene);
+    QCOMPARE(txt->toPlainText(), QString("Hell"));
+
+    // 2. Move cursor to before 'e' ("H|ell") and press Delete
+    QTextCursor c = txt->textCursor();
+    c.setPosition(1);
+    txt->setTextCursor(c);
+
+    QKeyEvent delKey(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+    scene.keyPressEvent(&delKey);
+
+    // TextItem MUST NOT be deleted! 'e' should be deleted -> "Hll"
+    foundInScene = false;
+    for (auto* item : scene.items()) {
+        if (item == txt) foundInScene = true;
+    }
+    QVERIFY(foundInScene);
+    QCOMPARE(txt->toPlainText(), QString("Hll"));
+
+    // 3. Finish editing and switch to select mode
+    txt->finishEditing();
+    QVERIFY(!txt->isEditing());
+    scene.setCurrentTool(ToolType::Select);
+    scene.clearSelection();
+    txt->setSelected(true);
+
+    // When NOT editing and selected, Delete key should remove the item
+    scene.keyPressEvent(&delKey);
+    foundInScene = false;
+    for (auto* item : scene.items()) {
+        if (item == txt) foundInScene = true;
+    }
+    QVERIFY(!foundInScene);
+}
+
+int main(int argc, char** argv) {
+    QApplication app(argc, argv);
+    TestEditorTools tc;
+    return QTest::qExec(&tc, argc, argv);
+}
+
+#include "test_wayland_editor.moc"

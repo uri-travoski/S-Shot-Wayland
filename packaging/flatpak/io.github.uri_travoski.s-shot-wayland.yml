@@ -1,0 +1,25 @@
+app-id: io.github.uri_travoski.s-shot-wayland
+runtime: org.kde.Platform
+runtime-version: '6.8'
+sdk: org.kde.Sdk
+command: s-shot-wayland
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --filesystem=xdg-pictures
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --own-name=org.kde.StatusNotifierItem-1-1
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.portal.Desktop
+
+modules:
+  - name: s-shot-wayland
+    buildsystem: cmake
+    builddir: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+    sources:
+      - type: archive
+        url: https://github.com/uri-travoski/S-Shot-Wayland/archive/refs/tags/v1.32.tar.gz
+        sha256: 0000000000000000000000000000000000000000000000000000000000000000

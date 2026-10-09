@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Terminate any running s-shot-wayland background instances so new version takes effect
+pkill -x s-shot-wayland 2>/dev/null || killall s-shot-wayland 2>/dev/null || true
+
+if [ -x /usr/bin/update-desktop-database ]; then
+    /usr/bin/update-desktop-database -q /usr/share/applications || true
+fi
+
+if [ -x /usr/bin/gtk-update-icon-cache ]; then
+    /usr/bin/gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+
+exit 0

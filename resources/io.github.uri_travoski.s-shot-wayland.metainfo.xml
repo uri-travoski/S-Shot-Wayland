@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.uri_travoski.s-shot-wayland</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>S-Shot Wayland</name>
+  <summary>Lightweight Native Wayland Screenshot and Annotation Tool</summary>
+  <description>
+    <p>
+      S-Shot Wayland is a lightweight, low-resource screenshot and image annotation application rewritten specifically for Linux Wayland compositors (GNOME, KDE Plasma, Cinnamon Wayland, Hyprland, Sway, COSMIC).
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Native Wayland capture via XDG Desktop Portal and wlr-screencopy</li>
+      <li>Precision screen color picker via Portal</li>
+      <li>Multi-tab editor with rich drawing tools (Pen, Highlighter, Arrow, Shapes)</li>
+      <li>Sequential badge counter with stepper (+/-) and reset</li>
+      <li>Privacy blur and pixelation with adjustable strength levels</li>
+      <li>Directional canvas resizing (expansion and reduction) with white canvas fill</li>
+      <li>White background fill on area selection deletion</li>
+      <li>Clean borderless text annotations with full inline editing</li>
+      <li>Direct pasting of clipboard images onto active canvas</li>
+      <li>System tray integration and minimal idle memory footprint</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.uri_travoski.s-shot-wayland.desktop</launchable>
+  <url type="homepage">https://github.com/uri-travoski/S-Shot-Wayland</url>
+  <url type="bugtracker">https://github.com/uri-travoski/S-Shot-Wayland/issues</url>
+  <url type="vcs-browser">https://github.com/uri-travoski/S-Shot-Wayland</url>
+  <provides>
+    <binary>s-shot-wayland</binary>
+  </provides>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Main S-Shot Wayland annotation editor</caption>
+      <image>https://raw.githubusercontent.com/uri-travoski/S-Shot-Wayland/main/resources/screenshots/editor-main.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.32" date="2026-10-09">
+      <description>
+        <p>Initial release of S-Shot Wayland (v1.32): complete native Wayland rewrite with low memory usage, XDG Desktop Portal capture, screen color picker, directional canvas resizing, borderless text editing, and multi-layer clipboard pasting.</p>
+      </description>
+    </release>
+  </releases>
+</component>

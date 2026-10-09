@@ -1,0 +1,30 @@
+[Desktop Entry]
+Name=S-Shot Wayland
+GenericName=Screenshot & Annotation Tool (Wayland)
+Comment=Lightweight Native Wayland Screenshot and Annotation Tool
+Exec=s-shot-wayland %F
+Icon=io.github.uri_travoski.s-shot-wayland
+Terminal=false
+Type=Application
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=screenshot;capture;snip;annotation;screen;print;editor;wayland;
+StartupWMClass=s-shot-wayland
+MimeType=image/png;image/jpeg;image/bmp;image/webp;
+StartupNotify=true
+Actions=Fullscreen;Region;Editor;ColorPicker;
+
+[Desktop Action Fullscreen]
+Name=Capture Fullscreen
+Exec=s-shot-wayland --fullscreen
+
+[Desktop Action Region]
+Name=Capture Selected Region
+Exec=s-shot-wayland --region
+
+[Desktop Action Editor]
+Name=Open Annotation Editor
+Exec=s-shot-wayland --editor
+
+[Desktop Action ColorPicker]
+Name=Pick Color From Screen
+Exec=s-shot-wayland --colorpicker
