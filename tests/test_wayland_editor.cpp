@@ -30,6 +30,7 @@
 #include <QMenuBar>
 #include <QScrollBar>
 #include <QTextCursor>
+#include <QTemporaryFile>
 
 class TestScene : public CanvasScene {
 public:
@@ -77,6 +78,15 @@ private slots:
     void testPanToolAndCanvasResizeHandles();
     void testPasteImageOntoExistingCanvas();
     void testTextEditingBackspaceAndDelete();
+    void testDirectionalResizeAllEightHandles();
+    void testAreaSelectionFourQuadrantsAndFloatingActions();
+    void testArrowsAndShapesGeometry();
+    void testBucketFillToleranceAndBoundaries();
+    void testHandToolAndZoomLimits();
+    void testPortalResponsesAndErrorHandling();
+    void testTabDirtyStateAndSaveDialog();
+    void testMemoryLeakRepetitiveCycles();
+    void testHighResolutionStress();
 };
 
 void TestEditorTools::initTestCase() {
@@ -1689,6 +1699,409 @@ void TestEditorTools::testTextEditingBackspaceAndDelete() {
         if (item == txt) foundInScene = true;
     }
     QVERIFY(!foundInScene);
+}
+
+void TestEditorTools::testDirectionalResizeAllEightHandles() {
+    TestScene testScene;
+    QImage quadImg(400, 300, QImage::Format_ARGB32_Premultiplied);
+    {
+        QPainter p(&quadImg);
+        p.fillRect(0, 0, 200, 150, Qt::red);
+        p.fillRect(200, 0, 200, 150, Qt::blue);
+        p.fillRect(0, 150, 200, 150, Qt::green);
+        p.fillRect(200, 150, 200, 150, Qt::yellow);
+    }
+    testScene.setBasePixmap(QPixmap::fromImage(quadImg));
+    testScene.setCurrentTool(ToolType::Select);
+
+    // Add an item at (60, 60)
+    BadgeItem* badge = new BadgeItem(1, QPointF(60, 60));
+    testScene.addItem(badge);
+
+    // 1. Inward crop from Top-Left: drag from (0,0) to (40, 30)
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(QPointF(0, 0));
+    press.setButton(Qt::LeftButton);
+    testScene.mousePressEvent(&press);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::TopLeft);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(QPointF(40, 30));
+    testScene.mouseMoveEvent(&move);
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(40, 30));
+    release.setButton(Qt::LeftButton);
+    testScene.mouseReleaseEvent(&release);
+
+    QCOMPARE(testScene.basePixmap().size(), QSize(360, 270));
+    // Badge at (60,60) was shifted by (-40, -30) -> now at (20, 30)
+    QCOMPARE(badge->pos(), QPointF(20, 30));
+
+    // 2. Inward crop from Top-Right: drag from (360, 0) to (320, 20)
+    press.setScenePos(QPointF(360, 0));
+    testScene.mousePressEvent(&press);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::TopRight);
+
+    move.setScenePos(QPointF(320, 20));
+    testScene.mouseMoveEvent(&move);
+
+    release.setScenePos(QPointF(320, 20));
+    testScene.mouseReleaseEvent(&release);
+
+    QCOMPARE(testScene.basePixmap().size(), QSize(320, 250));
+    // Top cropped by 20 -> badge pos shifted by (0, -20) -> (20, 10)
+    QCOMPARE(badge->pos(), QPointF(20, 10));
+
+    // 3. Inward crop from Bottom-Left: drag from (0, 250) to (30, 220)
+    press.setScenePos(QPointF(0, 250));
+    testScene.mousePressEvent(&press);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::BottomLeft);
+
+    move.setScenePos(QPointF(30, 220));
+    testScene.mouseMoveEvent(&move);
+
+    release.setScenePos(QPointF(30, 220));
+    testScene.mouseReleaseEvent(&release);
+
+    QCOMPARE(testScene.basePixmap().size(), QSize(290, 220));
+    // Left cropped by 30 -> badge pos shifted by (-30, 0) -> (-10, 10)
+    QCOMPARE(badge->pos(), QPointF(-10, 10));
+
+    // 4. Inward crop from Bottom-Right: drag from (290, 220) to (250, 190)
+    press.setScenePos(QPointF(290, 220));
+    testScene.mousePressEvent(&press);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::BottomRight);
+
+    move.setScenePos(QPointF(250, 190));
+    testScene.mouseMoveEvent(&move);
+
+    release.setScenePos(QPointF(250, 190));
+    testScene.mouseReleaseEvent(&release);
+
+    QCOMPARE(testScene.basePixmap().size(), QSize(250, 190));
+
+    // 5. Outward expansion on Right handle: drag from (250, 95) to (300, 95)
+    press.setScenePos(QPointF(250, 95));
+    testScene.mousePressEvent(&press);
+    QCOMPARE(testScene.activeHandle(), CanvasScene::CanvasHandle::Right);
+
+    move.setScenePos(QPointF(300, 95));
+    testScene.mouseMoveEvent(&move);
+
+    release.setScenePos(QPointF(300, 95));
+    testScene.mouseReleaseEvent(&release);
+
+    QCOMPARE(testScene.basePixmap().size(), QSize(300, 190));
+    // New area (x=275, y=95) must be pure WHITE (#FFFFFF)
+    QCOMPARE(testScene.basePixmap().toImage().pixelColor(275, 95), QColor(255, 255, 255));
+
+    // 6. Test Undo restores previous 250x190 dimensions
+    QVERIFY(testScene.undoStack()->canUndo());
+    testScene.undoStack()->undo();
+    QCOMPARE(testScene.basePixmap().size(), QSize(250, 190));
+
+    // 7. Test Redo restores 300x190
+    QVERIFY(testScene.undoStack()->canRedo());
+    testScene.undoStack()->redo();
+    QCOMPARE(testScene.basePixmap().size(), QSize(300, 190));
+
+    // 8. Clamping test: drag Right handle far to the left
+    press.setScenePos(QPointF(300, 95));
+    testScene.mousePressEvent(&press);
+    move.setScenePos(QPointF(-50, 95));
+    testScene.mouseMoveEvent(&move);
+    release.setScenePos(QPointF(-50, 95));
+    testScene.mouseReleaseEvent(&release);
+    QVERIFY(testScene.basePixmap().width() >= 20);
+}
+
+void TestEditorTools::testAreaSelectionFourQuadrantsAndFloatingActions() {
+    TestScene scene;
+    QPixmap base(400, 300);
+    base.fill(Qt::black);
+    scene.setBasePixmap(base);
+    scene.setCurrentTool(ToolType::Select);
+
+    // 1. Quadrant 1: Top-Left to Bottom-Right (50,50 -> 150,150)
+    QGraphicsSceneMouseEvent press(QEvent::GraphicsSceneMousePress);
+    press.setScenePos(QPointF(50, 50));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    scene.mousePressEvent(&press);
+
+    QGraphicsSceneMouseEvent move(QEvent::GraphicsSceneMouseMove);
+    move.setScenePos(QPointF(150, 150));
+    move.setButtons(Qt::LeftButton);
+    scene.mouseMoveEvent(&move);
+
+    QGraphicsSceneMouseEvent release(QEvent::GraphicsSceneMouseRelease);
+    release.setScenePos(QPointF(150, 150));
+    release.setButton(Qt::LeftButton);
+    scene.mouseReleaseEvent(&release);
+
+    QVERIFY(scene.hasAreaSelection());
+    QCOMPARE(scene.selectedArea(), QRectF(50, 50, 100, 100));
+
+    // Test Cut fills erased area with pure white
+    scene.cutSelectedArea();
+    QVERIFY(!scene.hasAreaSelection());
+    QImage cutImg = scene.basePixmap().toImage();
+    QCOMPARE(cutImg.pixelColor(100, 100), QColor(255, 255, 255));
+    QCOMPARE(cutImg.pixelColor(10, 10), QColor(0, 0, 0));
+
+    // 2. Quadrant 2: Bottom-Right to Top-Left (250,250 -> 150,150)
+    press.setScenePos(QPointF(250, 250));
+    scene.mousePressEvent(&press);
+    move.setScenePos(QPointF(150, 150));
+    scene.mouseMoveEvent(&move);
+    release.setScenePos(QPointF(150, 150));
+    scene.mouseReleaseEvent(&release);
+
+    QVERIFY(scene.hasAreaSelection());
+    QCOMPARE(scene.selectedArea(), QRectF(150, 150, 100, 100));
+
+    // Test Delete fills erased area with pure white
+    scene.deleteSelectedArea();
+    QVERIFY(!scene.hasAreaSelection());
+    QImage delImg = scene.basePixmap().toImage();
+    QCOMPARE(delImg.pixelColor(200, 200), QColor(255, 255, 255));
+
+    // 3. Quadrant 3: Top-Right to Bottom-Left (350,50 -> 250,150)
+    press.setScenePos(QPointF(350, 50));
+    scene.mousePressEvent(&press);
+    move.setScenePos(QPointF(250, 150));
+    scene.mouseMoveEvent(&move);
+    release.setScenePos(QPointF(250, 150));
+    scene.mouseReleaseEvent(&release);
+
+    QVERIFY(scene.hasAreaSelection());
+    QCOMPARE(scene.selectedArea(), QRectF(250, 50, 100, 100));
+
+    // Test Crop to selected area
+    scene.cropToSelectedArea();
+    QCOMPARE(scene.basePixmap().size(), QSize(100, 100));
+
+    // Undo crop restores 400x300
+    scene.undoStack()->undo();
+    QCOMPARE(scene.basePixmap().size(), QSize(400, 300));
+}
+
+void TestEditorTools::testArrowsAndShapesGeometry() {
+    ArrowItem arrow(ArrowMode::SingleArrow);
+    arrow.setEndpoints(QPointF(50, 50), QPointF(150, 50));
+    QCOMPARE(arrow.startPoint(), QPointF(50, 50));
+    QCOMPARE(arrow.endPoint(), QPointF(150, 50));
+    QRectF b1 = arrow.boundingRect();
+    QVERIFY(!b1.isEmpty());
+
+    // Zero-length arrow click
+    ArrowItem zeroArrow(ArrowMode::SingleArrow);
+    zeroArrow.setEndpoints(QPointF(50, 50), QPointF(50, 50));
+    QCOMPARE(zeroArrow.startPoint(), zeroArrow.endPoint());
+    QImage img(100, 100, QImage::Format_ARGB32);
+    QPainter p(&img);
+    QStyleOptionGraphicsItem opt;
+    zeroArrow.paint(&p, &opt, nullptr);
+
+    // Double Arrow
+    ArrowItem dblArrow(ArrowMode::DoubleArrow);
+    dblArrow.setEndpoints(QPointF(20, 20), QPointF(80, 80));
+    dblArrow.paint(&p, &opt, nullptr);
+
+    // ShapeItem - Rectangle (false) and Ellipse (true)
+    ShapeItem rectItem(false);
+    rectItem.setRect(QRectF(10, 10, 50, 50));
+    rectItem.setFillColor(Qt::yellow);
+    rectItem.setStrokeColor(Qt::red);
+    rectItem.paint(&p, &opt, nullptr);
+
+    ShapeItem ellipseItem(true);
+    ellipseItem.setRect(QRectF(20, 20, 60, 40));
+    ellipseItem.setFillColor(Qt::transparent);
+    ellipseItem.paint(&p, &opt, nullptr);
+}
+
+void TestEditorTools::testBucketFillToleranceAndBoundaries() {
+    TestScene scene;
+    QImage baseImg(200, 200, QImage::Format_ARGB32_Premultiplied);
+    baseImg.fill(QColor(255, 0, 0));
+    for (int y = 50; y < 150; ++y) {
+        for (int x = 50; x < 150; ++x) {
+            baseImg.setPixelColor(x, y, QColor(200, 0, 0));
+        }
+    }
+    scene.setBasePixmap(QPixmap::fromImage(baseImg));
+    scene.setCurrentTool(ToolType::BucketFill);
+    scene.setFillColor(QColor(0, 255, 0));
+
+    // Click corner (0,0) - fills outer red area
+    QGraphicsSceneMouseEvent clickCorner(QEvent::GraphicsSceneMousePress);
+    clickCorner.setScenePos(QPointF(0, 0));
+    clickCorner.setButton(Qt::LeftButton);
+    scene.mousePressEvent(&clickCorner);
+
+    QImage res1 = scene.basePixmap().toImage();
+    QCOMPARE(res1.pixelColor(0, 0), QColor(0, 255, 0));
+    QCOMPARE(res1.pixelColor(100, 100), QColor(200, 0, 0));
+
+    // Test Undo restores original red
+    QVERIFY(scene.undoStack()->canUndo());
+    scene.undoStack()->undo();
+    QImage resUndo = scene.basePixmap().toImage();
+    QCOMPARE(resUndo.pixelColor(0, 0), QColor(255, 0, 0));
+}
+
+void TestEditorTools::testHandToolAndZoomLimits() {
+    CanvasScene scene;
+    scene.setBasePixmap(QPixmap(300, 200));
+    CanvasView view(&scene);
+    view.resize(400, 300);
+    view.show();
+    (void)QTest::qWaitForWindowExposed(&view);
+    QTest::qWait(50);
+
+    // Test zoomActual resets to 1.0
+    view.zoomActual();
+    QCOMPARE(view.zoomFactor(), 1.0);
+
+    // Zoom Out multiple times - clamps at 0.1 (10%)
+    for (int i = 0; i < 30; ++i) {
+        view.zoomOut();
+    }
+    QVERIFY(view.zoomFactor() >= 0.1);
+
+    // Zoom In multiple times - clamps at 10.0 (1000%)
+    for (int i = 0; i < 50; ++i) {
+        view.zoomIn();
+    }
+    QVERIFY(view.zoomFactor() <= 10.0);
+
+    // Reset to actual
+    view.zoomActual();
+    QCOMPARE(view.zoomFactor(), 1.0);
+}
+
+void TestEditorTools::testPortalResponsesAndErrorHandling() {
+    WaylandCaptureManager& mgr = WaylandCaptureManager::instance();
+
+    // 1. Test Screenshot Response = 0 with a temporary image
+    QTemporaryFile tempImg;
+    tempImg.setAutoRemove(true);
+    if (tempImg.open()) {
+        QPixmap(100, 100).save(tempImg.fileName(), "PNG");
+        tempImg.close();
+
+        bool gotPix = false;
+        auto conn = connect(&mgr, &WaylandCaptureManager::screenshotReady, [&gotPix](const QPixmap& p) {
+            if (!p.isNull()) gotPix = true;
+        });
+
+        QVariantMap results;
+        results["uri"] = QUrl::fromLocalFile(tempImg.fileName()).toString();
+        mgr.handlePortalResponse(0, results, false);
+        QVERIFY(gotPix);
+        disconnect(conn);
+    }
+
+    // 2. Test Screenshot Response = 1 (User Cancelled)
+    bool cancelled = false;
+    auto connCancel = connect(&mgr, &WaylandCaptureManager::captureCancelled, [&cancelled]() {
+        cancelled = true;
+    });
+    mgr.handlePortalResponse(1, QVariantMap(), false);
+    QVERIFY(cancelled);
+    disconnect(connCancel);
+
+    // 3. Test Color Picker with QVariantList
+    bool colorGot = false;
+    QString hexOut;
+    auto connCol = connect(&mgr, &WaylandCaptureManager::colorPicked, [&colorGot, &hexOut](const QColor& c, const QString& h) {
+        Q_UNUSED(c);
+        colorGot = true;
+        hexOut = h;
+    });
+    QVariantMap colResults;
+    QVariantList rgbList;
+    rgbList << 1.0 << 0.0 << 0.5; // (255, 0, 128) -> #FF0080
+    colResults["color"] = rgbList;
+    mgr.handlePortalResponse(0, colResults, true);
+    QVERIFY(colorGot);
+    QCOMPARE(hexOut, QString("#FF0080"));
+    disconnect(connCol);
+}
+
+void TestEditorTools::testTabDirtyStateAndSaveDialog() {
+    MainWindow win;
+    win.show();
+    (void)QTest::qWaitForWindowExposed(&win);
+
+    QTabWidget* tabs = win.findChild<QTabWidget*>();
+    QVERIFY(tabs != nullptr);
+
+    // Add 2 unmodified tabs
+    QPixmap p(200, 200);
+    p.fill(Qt::white);
+    win.addImageTab(p, "Unmodified1.png");
+    win.addImageTab(p, "Unmodified2.png");
+    QCOMPARE(tabs->count(), 2);
+
+    // Close unmodified tab 0 via tabCloseRequested signal -> closes immediately without prompt
+    emit tabs->tabCloseRequested(0);
+    QCOMPARE(tabs->count(), 1);
+    QCOMPARE(tabs->tabText(0), QString("Unmodified2.png"));
+}
+
+void TestEditorTools::testMemoryLeakRepetitiveCycles() {
+    for (int cycle = 0; cycle < 50; ++cycle) {
+        TestScene scene;
+        QPixmap base(300, 200);
+        base.fill(Qt::white);
+        scene.setBasePixmap(base);
+
+        scene.setCurrentTool(ToolType::Pen);
+        QGraphicsSceneMouseEvent p1(QEvent::GraphicsSceneMousePress);
+        p1.setScenePos(QPointF(10, 10));
+        p1.setButton(Qt::LeftButton);
+        scene.mousePressEvent(&p1);
+
+        QGraphicsSceneMouseEvent p2(QEvent::GraphicsSceneMouseMove);
+        p2.setScenePos(QPointF(50, 50));
+        scene.mouseMoveEvent(&p2);
+
+        QGraphicsSceneMouseEvent p3(QEvent::GraphicsSceneMouseRelease);
+        p3.setScenePos(QPointF(50, 50));
+        p3.setButton(Qt::LeftButton);
+        scene.mouseReleaseEvent(&p3);
+
+        BlurItem* blur = new BlurItem(QRectF(20, 20, 40, 40), scene.basePixmap(), 3);
+        scene.addItem(blur);
+
+        if (scene.undoStack()->canUndo()) {
+            scene.undoStack()->undo();
+        }
+        if (scene.undoStack()->canRedo()) {
+            scene.undoStack()->redo();
+        }
+    }
+    QVERIFY(true);
+}
+
+void TestEditorTools::testHighResolutionStress() {
+    TestScene scene;
+    QPixmap base4k(3840, 2160);
+    base4k.fill(Qt::cyan);
+    scene.setBasePixmap(base4k);
+
+    QCOMPARE(scene.basePixmap().size(), QSize(3840, 2160));
+
+    for (int i = 0; i < 5; ++i) {
+        BlurItem* b = new BlurItem(QRectF(i * 400, 200, 300, 300), base4k, 4);
+        scene.addItem(b);
+    }
+
+    QPixmap rendered = scene.renderToPixmap();
+    QCOMPARE(rendered.size(), QSize(3840, 2160));
 }
 
 int main(int argc, char** argv) {

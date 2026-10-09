@@ -23,6 +23,9 @@ public:
     // Trigger Wayland color picker
     void pickColor();
 
+    // Portal response handler (public for testing and response decoding)
+    void handlePortalResponse(uint response, const QVariantMap& results, bool isColorPicker);
+
 signals:
     void screenshotReady(const QPixmap& pixmap);
     void colorPicked(const QColor& color, const QString& hex);
@@ -38,7 +41,6 @@ private:
     ~WaylandCaptureManager() override = default;
 
     void requestPortalScreenshot(bool interactive);
-    void handlePortalResponse(uint response, const QVariantMap& results, bool isColorPicker);
 
     // Fallback capture when portal is bypassed or in non-portal environment
     void performDirectCapture();
